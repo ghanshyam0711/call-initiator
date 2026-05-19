@@ -1,0 +1,31 @@
+[project]
+name = "call-initiator"
+version = "1.0.0"
+description = "FastAPI service to trigger outbound LiveKit screening calls"
+requires-python = ">=3.10, <3.15"
+dependencies = [
+    "fastapi>=0.136.1",
+    "livekit-api>=1.0",
+    "python-dotenv",
+    "uvicorn>=0.46.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "httpx",
+    "ruff",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "B", "A", "C4", "UP", "SIM", "RUF"]
+ignore = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
