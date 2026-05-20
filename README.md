@@ -1,98 +1,34 @@
-# call-initiator
+# Flow Manager API
 
-FastAPI service that starts outbound LiveKit screening calls. It creates a room, dispatches the configured voice agent, and returns dispatch metadata to the caller.
+FastAPI service for screening-call orchestration with room for future crew endpoints and webhooks.
 
-This project is extracted from the HireLoop voice screening stack. The LiveKit agent worker runs separately (for example in `voice_agent`).
-
-## Requirements
-
-- Python 3.10+
-- LiveKit project credentials
-- SIP trunk ID (validated at request time)
-- A registered LiveKit agent named `Jamie-cbf` (or update `AGENT_NAME` in `api.py`)
-
-## Environment variables
-
-Copy `.env.example` to `.env` and fill in values:
-
-| Variable | Description |
-|----------|-------------|
-| `LIVEKIT_URL` | LiveKit server URL |
-| `LIVEKIT_API_KEY` | LiveKit API key |
-| `LIVEKIT_API_SECRET` | LiveKit API secret |
-| `LIVEKIT_SIP_TRUNK_ID` | SIP trunk for outbound calls |
-
-## Local development
+## Run
 
 ```bash
-cd call-initiator
-cp .env.example .env
-uv sync
-uv run uvicorn api:app --host 0.0.0.0 --port 8000 --reload
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Health check:
+## Environment
 
-```bash
-curl http://localhost:8000/health
-```
+- `LIVEKIT_URL`
+- `LIVEKIT_API_KEY`
+- `LIVEKIT_API_SECRET`
+- `LIVEKIT_SIP_TRUNK_ID`
+- `AGENT_NAME` optional, defaults to `Jamie-cbf`
+- `CREWAI_BASE_URL`
+- `CREWAI_API_TOKEN`
+- `CREWAI_HUMAN_INPUT_WEBHOOK_URL` optional if the request does not supply one
+- `CREWAI_HUMAN_INPUT_WEBHOOK_TOKEN` optional bearer token for webhook verification
+- `DATABASE_URL`
 
-## API
+## Crew kickoff
 
-### `POST /start-screening-call`
+`POST /crew/kickoff` proxies to `CREWAI_BASE_URL/kickoff`, sends the documented `humanInputWebhook` object, and upserts the returned `kickoff_id` into `public.screenings`.
 
-Request body:
+## Crew webhook
 
-```json
-{
-  "screening_id": "screening-123",
-  "candidate_mobile_no": "+15551234567",
-  "candidate_name": "Jane Doe",
-  "interview_language": "English",
-  "questions": [
-    "Tell me about your experience with Python.",
-    "What APIs have you built recently?"
-  ]
-}
-```
+`POST /webhooks/crew/human-input` accepts the human-in-the-loop callback payload from CrewAI and updates the matching `public.screenings` row by `kickoff_id`, storing the raw `task_output` in `transcript`.
 
-Example:
+## Transcript handoff
 
-```bash
-curl -X POST "http://localhost:8000/start-screening-call" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "screening_id": "screening-123",
-    "candidate_mobile_no": "+15551234567",
-    "candidate_name": "Jane Doe",
-    "interview_language": "English",
-    "questions": ["Tell me about your experience with Python."]
-  }'
-```
-
-Response:
-
-```json
-{
-  "success": true,
-  "room_name": "screening-screening-123-abc123def4",
-  "screening_id": "screening-123",
-  "candidate_mobile_no": "+15551234567",
-  "message": "Call initiated for Jane Doe.",
-  "dispatch_id": "..."
-}
-```
-
-## Docker
-
-```bash
-cp .env.example .env
-docker compose up --build
-```
-
-The API is exposed on port `8000` by default (`API_PORT` can override the host mapping).
-
-## Notes
-
-- SIP participant creation is currently commented out in `api.py`; enabling it requires a valid `LIVEKIT_SIP_TRUNK_ID` and trunk configuration in LiveKit.
-- Transcript collection and evaluation are handled by the separate agent service, not this API.
+`POST /screenings/{screening_id}/transcript` stores the transcript, reads the stored Crew execution context, calls `CREWAI_BASE_URL/resume`, and saves the returned `kickoff_id` as the resume kickoff id.
