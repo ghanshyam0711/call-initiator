@@ -131,7 +131,7 @@ async def create_screening_call(
         )
         logger.info("Agent dispatch created: %s", dispatch.id)
 
-        #  Create SIP participant for the candidate
+        # Outbound dial: connect the candidate's phone to the room via LiveKit SIP trunk.
         await lk.sip.create_sip_participant(
             CreateSIPParticipantRequest(
                 sip_trunk_id=LIVEKIT_SIP_TRUNK_ID,
