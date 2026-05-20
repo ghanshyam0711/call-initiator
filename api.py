@@ -132,18 +132,18 @@ async def create_screening_call(
         logger.info("Agent dispatch created: %s", dispatch.id)
 
         #  Create SIP participant for the candidate
-        # await lk.sip.create_sip_participant(
-        #     CreateSIPParticipantRequest(
-        #         sip_trunk_id=LIVEKIT_SIP_TRUNK_ID,
-        #         sip_call_to=request.candidate_mobile_no,
-        #         room_name=room_name,
-        #         participant_identity=build_participant_identity(request.candidate_mobile_no),
-        #         participant_name=request.candidate_name,
-        #         participant_metadata=metadata,
-        #         play_ringtone=True,
-        #         krisp_enabled=True,
-        #     )
-        # )
+        await lk.sip.create_sip_participant(
+            CreateSIPParticipantRequest(
+                sip_trunk_id=LIVEKIT_SIP_TRUNK_ID,
+                sip_call_to=request.candidate_mobile_no,
+                room_name=room_name,
+                participant_identity=build_participant_identity(request.candidate_mobile_no),
+                participant_name=request.candidate_name,
+                participant_metadata=metadata,
+                play_ringtone=True,
+                krisp_enabled=True,
+            )
+        )
         logger.info("SIP participant created for %s", request.candidate_mobile_no)
         return dispatch.id
     finally:
