@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
+import logging
 from typing import Any
 
 import asyncpg
@@ -10,6 +12,9 @@ from app.core.config import settings
 
 class DatabaseError(RuntimeError):
     pass
+
+
+logger = logging.getLogger("flow-manager-api")
 
 
 def _normalize_row_value(value: Any) -> Any:
@@ -85,6 +90,11 @@ async def upsert_screening(row: dict[str, Any]) -> None:
         f"ON CONFLICT (screening_id) DO UPDATE SET {assignments}"
     )
     values = [_normalize_row_value(row[column]) for column in columns]
+    logger.info("Executing screenings upsert query: %s", statement)
+    logger.info(
+        "Upsert payload for screenings: %s",
+        json.dumps({column: row[column] for column in columns}, default=str),
+    )
     await _execute(statement, *values)
 
 

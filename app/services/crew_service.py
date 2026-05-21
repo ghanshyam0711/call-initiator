@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -22,6 +23,10 @@ async def kickoff_crew(request: CrewKickoffRequest) -> str:
         raise CrewKickoffError("CrewAI configuration is incomplete")
 
     payload = {"inputs": request.inputs.model_dump()}
+    logger.info(
+        "Received /crew/kickoff payload: %s",
+        json.dumps(payload, default=str),
+    )
     webhook_url = request.human_input_webhook_url or settings.crewai_human_input_webhook_url
     if not webhook_url:
         raise CrewKickoffError("humanInputWebhookUrl is required")
