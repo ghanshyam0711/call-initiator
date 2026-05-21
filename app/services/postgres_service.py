@@ -142,6 +142,26 @@ async def fetch_screening_resume_context(screening_id: str) -> dict[str, Any] | 
     return dict(row) if row else None
 
 
+async def fetch_screening_kickoff_id(screening_id: str) -> str | None:
+    if not settings.database_url:
+        raise DatabaseError("DATABASE_URL is not configured")
+
+    statement = "SELECT kickoff_id FROM public.screenings WHERE screening_id = $1 LIMIT 1"
+
+    try:
+        connection = await asyncpg.connect(settings.database_url)
+        try:
+            row = await connection.fetchrow(statement, screening_id)
+        finally:
+            await connection.close()
+    except Exception as exc:
+        raise DatabaseError(str(exc)) from exc
+
+    if not row:
+        return None
+    return row.get("kickoff_id")
+
+
 async def update_screening_transcript(
     *,
     screening_id: str,

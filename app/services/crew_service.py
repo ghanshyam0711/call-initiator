@@ -1,16 +1,20 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import httpx
 
 from app.core.config import settings
 from app.schemas.crew import CrewKickoffRequest
-from app.services.postgres_service import build_screening_row, upsert_screening
+from app.services.postgres_service import build_screening_row, fetch_screening_kickoff_id, upsert_screening
 
 
 class CrewKickoffError(RuntimeError):
     pass
+
+
+logger = logging.getLogger("flow-manager-api")
 
 
 async def kickoff_crew(request: CrewKickoffRequest) -> str:
@@ -44,10 +48,31 @@ async def kickoff_crew(request: CrewKickoffRequest) -> str:
     data: dict[str, Any] = response.json()
     kickoff_id = data.get("kickoff_id")
     if not kickoff_id or not isinstance(kickoff_id, str):
+        logger.error("CrewAI kickoff response missing kickoff_id. Response body: %s", data)
         raise CrewKickoffError("CrewAI response did not include kickoff_id")
 
     row = build_screening_row(inputs=request.inputs.model_dump(), kickoff_id=kickoff_id)
+    logger.info(
+        "Persisting kickoff row for screening_id=%s with kickoff_id=%s",
+        request.inputs.screening_id,
+        kickoff_id,
+    )
     await upsert_screening(row)
+
+    persisted_kickoff_id = await fetch_screening_kickoff_id(request.inputs.screening_id)
+    if persisted_kickoff_id != kickoff_id:
+        logger.error(
+            "Kickoff persistence mismatch for screening_id=%s expected=%s persisted=%s",
+            request.inputs.screening_id,
+            kickoff_id,
+            persisted_kickoff_id,
+        )
+    else:
+        logger.info(
+            "Kickoff persisted successfully for screening_id=%s kickoff_id=%s",
+            request.inputs.screening_id,
+            persisted_kickoff_id,
+        )
     return kickoff_id
 
 
