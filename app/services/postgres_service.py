@@ -117,18 +117,20 @@ async def update_screening_call(
 
 async def update_screening_webhook_feedback(
     *,
-    kickoff_id: str,
-    execution_id: str,
+    lookup_id: str,
+    kickoff_id: str | None,
+    execution_id: str | None,
     task_id: str,
     task_output: str,
 ) -> None:
     statement = (
         "UPDATE public.screenings "
-        "SET execution_id = $2, webhook_kickoff_id = $3, resume_task_id = $4, call_message = $5, updated_at = $6 "
-        "WHERE kickoff_id = $1 OR execution_id = $2 OR webhook_kickoff_id = $3"
+        "SET kickoff_id = COALESCE(kickoff_id, $2), execution_id = COALESCE($3, execution_id), "
+        "webhook_kickoff_id = COALESCE($2, webhook_kickoff_id), resume_task_id = $4, call_message = $5, updated_at = $6 "
+        "WHERE kickoff_id = $1 OR execution_id = $1 OR webhook_kickoff_id = $1"
     )
     received_at = datetime.now(timezone.utc)
-    await _execute(statement, kickoff_id, execution_id, kickoff_id, task_id, task_output, received_at)
+    await _execute(statement, lookup_id, kickoff_id, execution_id, task_id, task_output, received_at)
 
 
 async def fetch_screening_resume_context(screening_id: str) -> dict[str, Any] | None:

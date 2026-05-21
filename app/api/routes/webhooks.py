@@ -32,13 +32,17 @@ async def crew_human_input_webhook(
         "Received /webhooks/crew/human-input payload: %s",
         json.dumps(payload, default=str),
     )
-    kickoff_id = payload.get("kickoff_id") or payload.get("execution_id")
-    execution_id = payload.get("execution_id") or kickoff_id
+    kickoff_id = payload.get("kickoff_id")
+    execution_id = payload.get("execution_id")
+    lookup_id = kickoff_id or execution_id
     task_id = payload.get("task_id")
     task_output = payload.get("task_output")
 
-    if not kickoff_id or not task_id or task_output is None:
-        raise HTTPException(status_code=422, detail="Missing kickoff_id, task_id, or task_output")
+    if not lookup_id or not task_id or task_output is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Missing kickoff_id/execution_id, task_id, or task_output",
+        )
 
     if isinstance(task_output, (dict, list)):
         task_output_text = json.dumps(task_output)
@@ -47,8 +51,9 @@ async def crew_human_input_webhook(
 
     try:
         await update_screening_webhook_feedback(
-            kickoff_id=str(kickoff_id),
-            execution_id=str(execution_id),
+            lookup_id=str(lookup_id),
+            kickoff_id=str(kickoff_id) if kickoff_id else None,
+            execution_id=str(execution_id) if execution_id else None,
             task_id=str(task_id),
             task_output=task_output_text,
         )
