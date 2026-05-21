@@ -1,4 +1,5 @@
 import json
+import logging
 import uuid
 
 from fastapi import APIRouter, HTTPException
@@ -9,6 +10,7 @@ from app.services.livekit_service import create_screening_call
 from app.services.postgres_service import update_screening_call
 
 router = APIRouter(tags=["screening"])
+logger = logging.getLogger("flow-manager-api")
 
 
 def build_metadata(request: StartScreeningCallRequest) -> str:
@@ -46,6 +48,11 @@ async def start_screening_call(request: StartScreeningCallRequest) -> StartScree
             call_id=dispatch_id,
         )
     except Exception as exc:
+        logger.exception(
+            "Failed to start screening call for screening_id=%s candidate_mobile_no=%s",
+            request.screening_id,
+            request.candidate_mobile_no,
+        )
         raise HTTPException(status_code=500, detail=f"LiveKit error: {exc}") from exc
 
     return StartScreeningCallResponse(
