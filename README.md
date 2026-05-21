@@ -32,3 +32,5 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ## Transcript handoff
 
 `POST /screenings/{screening_id}/transcript` stores the transcript, reads the stored Crew execution context, calls `CREWAI_BASE_URL/resume`, and saves the returned `kickoff_id` as the resume kickoff id.
+
+<!-- deployment trigger: no functional change -->
