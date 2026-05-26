@@ -24,7 +24,10 @@ async def kickoff_crew(request: CrewKickoffRequest) -> str:
     if not settings.crewai_base_url or not settings.crewai_api_token:
         raise CrewKickoffError("CrewAI configuration is incomplete")
 
-    payload = {"inputs": request.inputs.model_dump()}
+    payload = {
+        "inputs": request.inputs.model_dump(),
+        "meta": {"screening_id": request.inputs.screening_id},
+    }
     logger.info(
         "[flow=kickoff.request] screening_id=%s payload=%s",
         request.inputs.screening_id,
@@ -66,16 +69,17 @@ async def kickoff_crew(request: CrewKickoffRequest) -> str:
     if not kickoff_id:
         raise CrewKickoffError("CrewAI response did not include kickoff_id")
 
+    execution_id = parsed.execution_id or kickoff_id
     row = build_screening_row(
         inputs=request.inputs.model_dump(),
         kickoff_id=kickoff_id,
-        execution_id=parsed.execution_id,
+        execution_id=execution_id,
     )
     logger.info(
         "[flow=kickoff.persist] screening_id=%s kickoff_id=%s execution_id=%s",
         request.inputs.screening_id,
         kickoff_id,
-        parsed.execution_id,
+        execution_id,
     )
     await upsert_screening(event=CREW_KICKOFF, row=row)
 

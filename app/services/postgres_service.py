@@ -218,6 +218,57 @@ async def update_screening_call(
         log_db_warning(event, operation, "no screening row updated", screening_id=screening_id)
 
 
+_SCREENING_LOOKUP_COLUMNS = (
+    "screening_id, kickoff_id, execution_id, webhook_kickoff_id, resume_task_id, status, call_id"
+)
+
+
+async def _fetch_screening_row(event: str, operation: str, statement: str, *args: Any) -> dict[str, Any] | None:
+    try:
+        connection = await _connect()
+        try:
+            row = await connection.fetchrow(statement, *args)
+        finally:
+            await connection.close()
+    except Exception as exc:
+        log_db_error(event, operation, "lookup query failed", error=str(exc), statement=statement[:120])
+        raise DatabaseError(str(exc)) from exc
+    return dict(row) if row else None
+
+
+async def _log_lookup_diagnostics(event: str, operation: str, lookup_id: str | None) -> None:
+    if not lookup_id:
+        return
+    exact_matches = await _fetch_screening_row(
+        event,
+        operation,
+        f"SELECT {_SCREENING_LOOKUP_COLUMNS} FROM public.screenings "
+        "WHERE kickoff_id::text = $1::text OR execution_id::text = $1::text OR webhook_kickoff_id::text = $1::text "
+        "LIMIT 5",
+        lookup_id,
+    )
+    recent_rows = await _fetch_screening_row(
+        event,
+        operation,
+        f"SELECT {_SCREENING_LOOKUP_COLUMNS} FROM public.screenings "
+        "WHERE status = 'crew_kickoff_created' AND call_id IS NOT NULL "
+        "AND updated_at > NOW() - INTERVAL '2 hours' "
+        "ORDER BY updated_at DESC LIMIT 3",
+    )
+    log_db_warning(
+        event,
+        operation,
+        "lookup diagnostics",
+        lookup_id=lookup_id,
+        exact_match_found=bool(exact_matches),
+        exact_match_screening_id=exact_matches.get("screening_id") if exact_matches else None,
+        exact_match_kickoff_id=exact_matches.get("kickoff_id") if exact_matches else None,
+        recent_fallback_screening_id=recent_rows.get("screening_id") if recent_rows else None,
+        recent_fallback_kickoff_id=recent_rows.get("kickoff_id") if recent_rows else None,
+        recent_fallback_call_id=recent_rows.get("call_id") if recent_rows else None,
+    )
+
+
 async def fetch_screening_lookup_context(
     *,
     event: str,
@@ -226,44 +277,95 @@ async def fetch_screening_lookup_context(
 ) -> dict[str, Any] | None:
     operation = "fetch_screening_lookup_context"
     if screening_id:
-        statement = (
-            "SELECT screening_id, kickoff_id, execution_id, webhook_kickoff_id, resume_task_id, "
-            "status, call_id "
-            "FROM public.screenings WHERE screening_id = $1 LIMIT 1"
-        )
-        args: tuple[Any, ...] = (screening_id,)
         lookup_label = f"screening_id={screening_id}"
-    elif lookup_id:
-        statement = (
-            "SELECT screening_id, kickoff_id, execution_id, webhook_kickoff_id, resume_task_id, "
-            "status, call_id "
-            "FROM public.screenings "
-            "WHERE kickoff_id = $1 OR execution_id = $1 OR webhook_kickoff_id = $1 "
-            "LIMIT 1"
+        log_db_info(event, operation, "loading screening row", match=lookup_label)
+        result = await _fetch_screening_row(
+            event,
+            operation,
+            f"SELECT {_SCREENING_LOOKUP_COLUMNS} FROM public.screenings WHERE screening_id = $1::text LIMIT 1",
+            screening_id,
         )
-        args = (lookup_id,)
+    elif lookup_id:
         lookup_label = f"lookup_id={lookup_id}"
+        log_db_info(event, operation, "loading screening row", match=lookup_label)
+        result = await _fetch_screening_row(
+            event,
+            operation,
+            f"SELECT {_SCREENING_LOOKUP_COLUMNS} FROM public.screenings "
+            "WHERE kickoff_id::text = $1::text OR execution_id::text = $1::text OR webhook_kickoff_id::text = $1::text "
+            "LIMIT 1",
+            lookup_id,
+        )
     else:
         log_db_warning(event, operation, "lookup skipped — no screening_id or lookup_id provided")
         return None
 
-    log_db_info(event, operation, "loading screening row", match=lookup_label)
-    try:
-        connection = await _connect()
-        try:
-            row = await connection.fetchrow(statement, *args)
-        finally:
-            await connection.close()
-    except Exception as exc:
-        log_db_error(event, operation, "lookup query failed", match=lookup_label, error=str(exc))
-        raise DatabaseError(str(exc)) from exc
-
-    result = dict(row) if row else None
     if result is None:
         log_db_warning(event, operation, "no screening row matched lookup", match=lookup_label)
     else:
         log_screening_row(event, operation, "screening row loaded", result)
     return result
+
+
+async def resolve_screening_for_webhook(
+    *,
+    event: str,
+    lookup_id: str,
+    screening_id: str | None,
+) -> tuple[str | None, dict[str, Any] | None]:
+    """Resolve screening_id for webhook updates using multiple lookup strategies."""
+    operation = "resolve_screening_for_webhook"
+
+    if screening_id:
+        row = await fetch_screening_lookup_context(
+            event=event,
+            lookup_id=None,
+            screening_id=screening_id,
+        )
+        if row:
+            log_db_info(event, operation, "resolved by screening_id from payload", screening_id=screening_id)
+            return screening_id, row
+
+    row = await fetch_screening_lookup_context(
+        event=event,
+        lookup_id=lookup_id,
+        screening_id=None,
+    )
+    if row:
+        resolved = str(row["screening_id"])
+        log_db_info(event, operation, "resolved by kickoff_id/execution_id", screening_id=resolved, lookup_id=lookup_id)
+        return resolved, row
+
+    fallback = await _fetch_screening_row(
+        event,
+        operation,
+        f"SELECT {_SCREENING_LOOKUP_COLUMNS} FROM public.screenings "
+        "WHERE status = 'crew_kickoff_created' AND call_id IS NOT NULL "
+        "AND updated_at > NOW() - INTERVAL '2 hours' "
+        "ORDER BY updated_at DESC LIMIT 1",
+    )
+    if fallback:
+        resolved = str(fallback["screening_id"])
+        log_db_warning(
+            event,
+            operation,
+            "resolved by recent active screening fallback — verify screening_id is correct",
+            screening_id=resolved,
+            lookup_id=lookup_id,
+            fallback_kickoff_id=fallback.get("kickoff_id"),
+            fallback_call_id=fallback.get("call_id"),
+        )
+        return resolved, fallback
+
+    await _log_lookup_diagnostics(event, operation, lookup_id)
+    log_db_error(
+        event,
+        operation,
+        "could not resolve screening row for webhook",
+        lookup_id=lookup_id,
+        screening_id=screening_id,
+    )
+    return None, None
 
 
 def _coalesce_id_sql(column: str, parameter_index: int) -> str:
@@ -292,42 +394,33 @@ async def update_screening_webhook_feedback(
             task_id=task_id,
         )
 
-    before = await fetch_screening_lookup_context(
+    resolved_screening_id, before = await resolve_screening_for_webhook(
         event=event,
         lookup_id=lookup_id,
         screening_id=screening_id,
     )
-    log_screening_row(event, operation, "row state before webhook update", before, screening_id=screening_id)
+    log_screening_row(event, operation, "row state before webhook update", before, screening_id=resolved_screening_id)
 
-    if screening_id:
-        statement = (
-            "UPDATE public.screenings "
-            f"SET {_coalesce_id_sql('kickoff_id', 2)}, "
-            f"{_coalesce_id_sql('execution_id', 3)}, "
-            f"{_coalesce_id_sql('webhook_kickoff_id', 2)}, "
-            "resume_task_id = $4, call_message = $5, updated_at = $6 "
-            "WHERE screening_id = $1"
-        )
-        args: tuple[Any, ...] = (
-            screening_id,
-            kickoff_id,
-            execution_id,
-            task_id,
-            task_output,
-            datetime.now(timezone.utc),
-        )
-        match_label = f"screening_id={screening_id}"
-    else:
-        statement = (
-            "UPDATE public.screenings "
-            f"SET {_coalesce_id_sql('kickoff_id', 2)}, "
-            f"{_coalesce_id_sql('execution_id', 3)}, "
-            f"{_coalesce_id_sql('webhook_kickoff_id', 2)}, "
-            "resume_task_id = $4, call_message = $5, updated_at = $6 "
-            "WHERE kickoff_id = $1 OR execution_id = $1 OR webhook_kickoff_id = $1"
-        )
-        args = (lookup_id, kickoff_id, execution_id, task_id, task_output, datetime.now(timezone.utc))
-        match_label = f"lookup_id={lookup_id}"
+    if not resolved_screening_id:
+        return 0
+
+    statement = (
+        "UPDATE public.screenings "
+        f"SET {_coalesce_id_sql('kickoff_id', 2)}, "
+        f"{_coalesce_id_sql('execution_id', 3)}, "
+        f"{_coalesce_id_sql('webhook_kickoff_id', 2)}, "
+        "resume_task_id = $4, call_message = $5, updated_at = $6 "
+        "WHERE screening_id = $1::text"
+    )
+    args: tuple[Any, ...] = (
+        resolved_screening_id,
+        kickoff_id,
+        execution_id,
+        task_id,
+        task_output,
+        datetime.now(timezone.utc),
+    )
+    match_label = f"screening_id={resolved_screening_id}"
 
     log_db_info(
         event,
@@ -343,21 +436,22 @@ async def update_screening_webhook_feedback(
 
     after = await fetch_screening_lookup_context(
         event=event,
-        lookup_id=lookup_id,
-        screening_id=screening_id or (str(before["screening_id"]) if before else None),
+        lookup_id=None,
+        screening_id=resolved_screening_id,
     )
-    log_screening_row(event, operation, "row state after webhook update", after, screening_id=screening_id)
+    log_screening_row(event, operation, "row state after webhook update", after, screening_id=resolved_screening_id)
 
     if rows == 0:
+        await _log_lookup_diagnostics(event, operation, lookup_id)
         log_db_error(
             event,
             operation,
-            "no rows updated — kickoff_id/execution_id may not match stored row",
+            "no rows updated for resolved screening_id",
             match=match_label,
             lookup_id=lookup_id,
             kickoff_id=kickoff_id,
             execution_id=execution_id,
-            screening_id=screening_id,
+            screening_id=resolved_screening_id,
         )
     else:
         log_missing_ids(event, operation, after, "kickoff_id", "execution_id", screening_id=screening_id)
