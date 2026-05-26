@@ -6,6 +6,7 @@ from typing import Any
 
 import httpx
 
+from app.core.api_events import CREW_KICKOFF
 from app.core.config import settings
 from app.schemas.crew import CrewKickoffRequest
 from app.services.postgres_service import build_screening_row, fetch_screening_kickoff_id, upsert_screening
@@ -76,9 +77,12 @@ async def kickoff_crew(request: CrewKickoffRequest) -> str:
         kickoff_id,
         parsed.execution_id,
     )
-    await upsert_screening(row)
+    await upsert_screening(event=CREW_KICKOFF, row=row)
 
-    persisted_kickoff_id = await fetch_screening_kickoff_id(request.inputs.screening_id)
+    persisted_kickoff_id = await fetch_screening_kickoff_id(
+        event=CREW_KICKOFF,
+        screening_id=request.inputs.screening_id,
+    )
     if persisted_kickoff_id != kickoff_id:
         logger.error(
             "[flow=kickoff.verify] mismatch screening_id=%s expected=%s persisted=%s",

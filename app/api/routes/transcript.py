@@ -2,6 +2,7 @@ import logging
 
 from fastapi import APIRouter, HTTPException
 
+from app.core.api_events import TRANSCRIPT_SUBMIT
 from app.schemas.transcript import ScreeningTranscriptRequest, ScreeningTranscriptResponse
 from app.services.crew_service import CrewKickoffError, resume_crew
 from app.services.postgres_service import (
@@ -10,6 +11,7 @@ from app.services.postgres_service import (
     update_screening_resume_kickoff,
     update_screening_transcript,
 )
+from app.utils.db_log import log_db_error, log_db_info
 
 router = APIRouter(tags=["transcript"])
 logger = logging.getLogger("flow-manager-api")
@@ -20,16 +22,23 @@ async def submit_transcript(screening_id: str, request: ScreeningTranscriptReque
     if screening_id != request.screening_id:
         raise HTTPException(status_code=400, detail="screening_id path and body must match")
 
-    logger.info(
-        "[flow=transcript.received] screening_id=%s transcript_chars=%s",
-        screening_id,
-        len(request.transcript),
+    log_db_info(
+        TRANSCRIPT_SUBMIT,
+        "submit_transcript",
+        "request received",
+        screening_id=screening_id,
+        transcript_chars=len(request.transcript),
     )
 
     try:
-        context = await fetch_screening_resume_context(screening_id)
+        context = await fetch_screening_resume_context(event=TRANSCRIPT_SUBMIT, screening_id=screening_id)
         if not context:
-            logger.error("[flow=transcript.validate] screening not found screening_id=%s", screening_id)
+            log_db_error(
+                TRANSCRIPT_SUBMIT,
+                "submit_transcript",
+                "screening not found",
+                screening_id=screening_id,
+            )
             raise HTTPException(status_code=404, detail="Screening not found")
 
         stored_execution_id = context.get("execution_id")
@@ -50,16 +59,18 @@ async def submit_transcript(screening_id: str, request: ScreeningTranscriptReque
         )
 
         if not execution_id or not task_id:
-            logger.error(
-                "[flow=transcript.validate] incomplete crew context screening_id=%s "
-                "execution_id=%s resume_task_id=%s — webhook may not have linked execution_id to row",
-                screening_id,
-                execution_id,
-                task_id,
+            log_db_error(
+                TRANSCRIPT_SUBMIT,
+                "submit_transcript",
+                "execution_id or resume_task_id is missing — webhook may not have linked IDs",
+                screening_id=screening_id,
+                execution_id=execution_id,
+                resume_task_id=task_id,
             )
             raise HTTPException(status_code=409, detail="Crew execution context is incomplete")
 
         await update_screening_transcript(
+            event=TRANSCRIPT_SUBMIT,
             screening_id=request.screening_id,
             transcript=request.transcript,
             candidate_name=request.candidate_name,
@@ -74,6 +85,7 @@ async def submit_transcript(screening_id: str, request: ScreeningTranscriptReque
         )
 
         await update_screening_resume_kickoff(
+            event=TRANSCRIPT_SUBMIT,
             screening_id=request.screening_id,
             resume_kickoff_id=resume_kickoff_id,
             execution_id=str(execution_id),

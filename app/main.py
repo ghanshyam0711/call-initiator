@@ -2,10 +2,11 @@ import logging
 import os
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import crew, health, screening, transcript, webhooks
+from app.utils.db_log import log_db_info
 
 load_dotenv()
 
@@ -25,6 +26,27 @@ app.include_router(screening.router)
 app.include_router(transcript.router)
 app.include_router(crew.router)
 app.include_router(webhooks.router)
+
+
+def _resolve_request_event(method: str, path: str) -> str:
+    if path == "/crew/kickoff" and method == "POST":
+        return "POST /crew/kickoff"
+    if path == "/webhooks/crew/human-input" and method == "POST":
+        return "POST /webhooks/crew/human-input"
+    if path == "/start-screening-call" and method == "POST":
+        return "POST /start-screening-call"
+    if path.startswith("/screenings/") and path.endswith("/transcript") and method == "POST":
+        return "POST /screenings/{screening_id}/transcript"
+    return f"{method} {path}"
+
+
+@app.middleware("http")
+async def log_incoming_request_event(request: Request, call_next):
+    event = _resolve_request_event(request.method, request.url.path)
+    log_db_info(event, "http_request", "incoming request", client=request.client.host if request.client else None)
+    response = await call_next(request)
+    log_db_info(event, "http_request", "request completed", status_code=response.status_code)
+    return response
 
 
 @app.on_event("startup")

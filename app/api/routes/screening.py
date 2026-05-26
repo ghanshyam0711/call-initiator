@@ -4,10 +4,12 @@ import uuid
 
 from fastapi import APIRouter, HTTPException
 
+from app.core.api_events import START_SCREENING_CALL
 from app.schemas.screening import StartScreeningCallRequest, StartScreeningCallResponse
 from app.core.config import settings
 from app.services.livekit_service import create_screening_call
 from app.services.postgres_service import update_screening_call
+from app.utils.db_log import log_db_info
 
 router = APIRouter(tags=["screening"])
 logger = logging.getLogger("flow-manager-api")
@@ -36,6 +38,13 @@ async def start_screening_call(request: StartScreeningCallRequest) -> StartScree
 
     metadata = build_metadata(request)
     room_name = build_room_name(request.screening_id)
+    log_db_info(
+        START_SCREENING_CALL,
+        "start_screening_call",
+        "request received",
+        screening_id=request.screening_id,
+        room_name=room_name,
+    )
 
     try:
         dispatch_id = await create_screening_call(
@@ -44,6 +53,7 @@ async def start_screening_call(request: StartScreeningCallRequest) -> StartScree
             metadata=metadata,
         )
         await update_screening_call(
+            event=START_SCREENING_CALL,
             screening_id=request.screening_id,
             call_id=dispatch_id,
         )

@@ -1,12 +1,17 @@
 import json
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Request
 
+from app.core.api_events import WEBHOOK_CREW_HUMAN_INPUT
 from app.core.config import settings
 from app.services.postgres_service import DatabaseError, update_screening_webhook_feedback
+from app.utils.crew_contract import parse_human_input_webhook
+from app.utils.db_log import log_db_info
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
+logger = logging.getLogger("flow-manager-api")
 
 
 @router.get("/health")
@@ -23,16 +28,27 @@ async def crew_human_input_webhook(
     if expected_token:
         expected_authorization = f"Bearer {expected_token}"
         if authorization != expected_authorization:
+            logger.warning("[flow=webhook.auth] unauthorized webhook call")
             raise HTTPException(status_code=401, detail="Unauthorized webhook call")
 
     payload: dict[str, Any] = await request.json()
-    kickoff_id = payload.get("kickoff_id") or payload.get("execution_id")
-    execution_id = payload.get("execution_id") or kickoff_id
-    task_id = payload.get("task_id")
-    task_output = payload.get("task_output")
+    log_db_info(
+        WEBHOOK_CREW_HUMAN_INPUT,
+        "crew_human_input_webhook",
+        "request received",
+        payload=json.dumps(payload, default=str),
+    )
 
-    if not kickoff_id or not task_id or task_output is None:
-        raise HTTPException(status_code=422, detail="Missing kickoff_id, task_id, or task_output")
+    fields = parse_human_input_webhook(payload)
+    lookup_id = fields.lookup_id
+    task_id = fields.task_id
+    task_output = fields.task_output
+
+    if not lookup_id or not task_id or task_output is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Missing kickoff_id/execution_id, task_id, or task_output",
+        )
 
     if isinstance(task_output, (dict, list)):
         task_output_text = json.dumps(task_output)
@@ -40,13 +56,36 @@ async def crew_human_input_webhook(
         task_output_text = str(task_output)
 
     try:
-        await update_screening_webhook_feedback(
-            kickoff_id=str(kickoff_id),
-            execution_id=str(execution_id),
+        rows_updated = await update_screening_webhook_feedback(
+            event=WEBHOOK_CREW_HUMAN_INPUT,
+            lookup_id=str(lookup_id),
+            screening_id=fields.screening_id,
+            kickoff_id=fields.kickoff_id,
+            execution_id=fields.execution_id,
             task_id=str(task_id),
             task_output=task_output_text,
         )
+        if rows_updated == 0:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    "No screening row matched webhook identifiers. "
+                    f"lookup_id={lookup_id} screening_id={fields.screening_id}"
+                ),
+            )
     except DatabaseError as exc:
+        logger.exception(
+            "[flow=webhook.error] database failure kickoff_id=%s execution_id=%s",
+            fields.kickoff_id,
+            fields.execution_id,
+        )
         raise HTTPException(status_code=500, detail=f"Database update failed: {exc}") from exc
 
+    logger.info(
+        "[flow=webhook.complete] kickoff_id=%s execution_id=%s screening_id=%s task_id=%s",
+        fields.kickoff_id,
+        fields.execution_id,
+        fields.screening_id,
+        task_id,
+    )
     return {"status": "updated"}
