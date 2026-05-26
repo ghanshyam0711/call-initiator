@@ -9,6 +9,7 @@ import httpx
 from app.core.config import settings
 from app.schemas.crew import CrewKickoffRequest
 from app.services.postgres_service import build_screening_row, fetch_screening_kickoff_id, upsert_screening
+from app.utils.crew_contract import parse_crew_kickoff_response
 
 
 class CrewKickoffError(RuntimeError):
@@ -24,7 +25,8 @@ async def kickoff_crew(request: CrewKickoffRequest) -> str:
 
     payload = {"inputs": request.inputs.model_dump()}
     logger.info(
-        "Received /crew/kickoff payload: %s",
+        "[flow=kickoff.request] screening_id=%s payload=%s",
+        request.inputs.screening_id,
         json.dumps(payload, default=str),
     )
     webhook_url = request.human_input_webhook_url or settings.crewai_human_input_webhook_url
@@ -44,37 +46,49 @@ async def kickoff_crew(request: CrewKickoffRequest) -> str:
     }
 
     kickoff_url = settings.crewai_base_url.rstrip("/") + "/kickoff"
+    logger.info("[flow=kickoff.http] POST %s screening_id=%s", kickoff_url, request.inputs.screening_id)
     async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.post(kickoff_url, headers=headers, json=payload)
 
+    logger.info(
+        "[flow=kickoff.http] status=%s screening_id=%s body=%s",
+        response.status_code,
+        request.inputs.screening_id,
+        response.text,
+    )
     if response.status_code >= 400:
         raise CrewKickoffError(f"CrewAI kickoff failed: {response.status_code} {response.text}")
 
     data: dict[str, Any] = response.json()
-    kickoff_id = data.get("kickoff_id")
-    if not kickoff_id or not isinstance(kickoff_id, str):
-        logger.error("CrewAI kickoff response missing kickoff_id. Response body: %s", data)
+    parsed = parse_crew_kickoff_response(data)
+    kickoff_id = parsed.kickoff_id
+    if not kickoff_id:
         raise CrewKickoffError("CrewAI response did not include kickoff_id")
 
-    row = build_screening_row(inputs=request.inputs.model_dump(), kickoff_id=kickoff_id)
+    row = build_screening_row(
+        inputs=request.inputs.model_dump(),
+        kickoff_id=kickoff_id,
+        execution_id=parsed.execution_id,
+    )
     logger.info(
-        "Persisting kickoff row for screening_id=%s with kickoff_id=%s",
+        "[flow=kickoff.persist] screening_id=%s kickoff_id=%s execution_id=%s",
         request.inputs.screening_id,
         kickoff_id,
+        parsed.execution_id,
     )
     await upsert_screening(row)
 
     persisted_kickoff_id = await fetch_screening_kickoff_id(request.inputs.screening_id)
     if persisted_kickoff_id != kickoff_id:
         logger.error(
-            "Kickoff persistence mismatch for screening_id=%s expected=%s persisted=%s",
+            "[flow=kickoff.verify] mismatch screening_id=%s expected=%s persisted=%s",
             request.inputs.screening_id,
             kickoff_id,
             persisted_kickoff_id,
         )
     else:
         logger.info(
-            "Kickoff persisted successfully for screening_id=%s kickoff_id=%s",
+            "[flow=kickoff.verify] success screening_id=%s kickoff_id=%s",
             request.inputs.screening_id,
             persisted_kickoff_id,
         )
@@ -91,9 +105,13 @@ async def resume_crew(*, execution_id: str, task_id: str, human_feedback: str) -
 
     resume_url = _resolve_resume_url()
     payload = {
+        "execution_id": execution_id,
         "executionId": execution_id,
+        "task_id": task_id,
         "taskId": task_id,
+        "human_feedback": human_feedback,
         "humanFeedback": human_feedback,
+        "is_approve": True,
         "isApprove": True,
     }
 
@@ -102,15 +120,40 @@ async def resume_crew(*, execution_id: str, task_id: str, human_feedback: str) -
         "Content-Type": "application/json",
     }
 
+    logger.info(
+        "[flow=resume.http] POST %s execution_id=%s task_id=%s feedback_chars=%s",
+        resume_url,
+        execution_id,
+        task_id,
+        len(human_feedback),
+    )
     async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.post(resume_url, headers=headers, json=payload)
 
+    logger.info(
+        "[flow=resume.http] status=%s execution_id=%s body=%s",
+        response.status_code,
+        execution_id,
+        response.text,
+    )
     if response.status_code >= 400:
         raise CrewKickoffError(f"CrewAI resume failed: {response.status_code} {response.text}")
 
     data: dict[str, Any] = response.json()
-    resume_kickoff_id = data.get("kickoff_id")
-    if not resume_kickoff_id or not isinstance(resume_kickoff_id, str):
+    parsed = parse_crew_kickoff_response(data)
+    resume_kickoff_id = parsed.kickoff_id
+    if not resume_kickoff_id:
+        logger.error(
+            "[flow=resume.parse] missing kickoff_id execution_id=%s response_keys=%s",
+            execution_id,
+            parsed.response_keys,
+        )
         raise CrewKickoffError("CrewAI resume response did not include kickoff_id")
 
+    logger.info(
+        "[flow=resume.parse] execution_id=%s resume_kickoff_id=%s resume_execution_id=%s",
+        execution_id,
+        resume_kickoff_id,
+        parsed.execution_id,
+    )
     return resume_kickoff_id
